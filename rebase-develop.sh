@@ -74,10 +74,9 @@ echo "${DIM}Rebasing onto develop...${RESET}"
 if git rebase develop; then
     echo "${GREEN}${BOLD}✓ Rebase successful.${RESET}"
 else
-    echo "${RED}${BOLD}✗ Rebase conflicts detected. Resolve them, then:${RESET}"
-    echo "${DIM}  git rebase --continue${RESET}"
-    echo "${DIM}  git rebase --abort    (to cancel)${RESET}"
-    go_bump_lib_version
+    echo "${RED}${BOLD}✗ Rebase conflicts detected. Resolve them, then:${RESET}!"
+    echo "${DIM}  git rebase --continue (or --abort)${RESET}"
+    echo "${DIM}  and git stash pop)${RESET}"
     exit 1
 fi
 

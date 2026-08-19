@@ -141,7 +141,7 @@ parse_issues_to_file() {
   > "$outfile"
 
   { cat "$file"; echo; echo "### 999. END"; } | while IFS= read -r line; do
-    if echo "$line" | grep -qE '^### 2\. Critical'; then
+    if echo "$line" | grep -qE '^(>+ *)?### 2\. Critical'; then
       if [ -n "$pending_filename" ] && [ -n "$pending_body" ]; then
         echo "${pending_filename}|${pending_line:-0}|${pending_section}|${pending_body}" >> "$outfile"
       fi
@@ -149,7 +149,7 @@ parse_issues_to_file() {
       current_section="critical"
       in_section=true
       continue
-    elif echo "$line" | grep -qE '^### 3\. Major'; then
+    elif echo "$line" | grep -qE '^(>+ *)?### 3\. Major'; then
       if [ -n "$pending_filename" ] && [ -n "$pending_body" ]; then
         echo "${pending_filename}|${pending_line:-0}|${pending_section}|${pending_body}" >> "$outfile"
       fi
@@ -157,7 +157,7 @@ parse_issues_to_file() {
       current_section="major"
       if [ "$sections" = "critical" ]; then in_section=false; else in_section=true; fi
       continue
-    elif echo "$line" | grep -qE '^### [0-9]'; then
+    elif echo "$line" | grep -qE '^(>+ *)?### [0-9]'; then
       if [ -n "$pending_filename" ] && [ -n "$pending_body" ]; then
         echo "${pending_filename}|${pending_line:-0}|${pending_section}|${pending_body}" >> "$outfile"
       fi
@@ -186,7 +186,8 @@ parse_issues_to_file() {
           echo "${pending_filename}|${pending_line:-0}|${pending_section}|${pending_body}" >> "$outfile"
         fi
         pending_filename=$(echo "$file_ref" | sed -E "s|:.*$||" | sed -E "s| .*||")
-        pending_line=$(echo "$file_ref" | sed -E 's/^[^:]+://' | sed -E 's/^~//' | sed -E 's/[–-].*//' | grep -oE '^[0-9]+' || true)
+        # If range (e.g. 178-183 or 178–183), take the LAST line number
+        pending_line=$(echo "$file_ref" | sed -E 's/^[^:]+://' | sed -E 's/^~//' | sed -E 's/^[0-9]+[–-]//' | grep -oE '^[0-9]+' || true)
         pending_section="$current_section"
         pending_body="$body_text"
       elif [ -n "$pending_filename" ] && [ -n "$line" ]; then
@@ -482,7 +483,7 @@ elif [ "$POST_MODE" = "inline" ]; then
     echo "Response received but could not confirm review ID."
     echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
   fi
-fi
+
 
 echo "PR: $PR_URL"
 
