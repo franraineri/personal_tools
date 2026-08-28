@@ -235,13 +235,15 @@ a simple list. Each item: **file:name** **file:line** — what's wrong, and then
 Focus: structural improvments, runtime errors, type safety, security.
 
 ### 3. Major Issues (should fix)
-Same format. Focus: performance, a11y, deprecated APIs, missing tests.
+Each item: **file:name** **file:line** — Focus: performance, deprecated APIs, missing tests.
 
 ---
 RULES:
-- Be specific with line numbers
+- Just append the output on the file, in format described
+- Be specific with line numbers on each review. Add the last line number for a code-clock you are reviewing/commenting/suggesting
 - Do NOT repeat issues already listed in "Existing Unresolved Comments"
 - Do NOT include code snippets or code blocks — quick and concise text proposals only
+- Do Not include special characters or characters drawing at all.
 - Keep each issue to 1-2 sentences max
 - write the comment fixes as a suggestion, like 'we could ...' 'it should be ... ?'
 - avoid annalysing minnor issues, skip them. 
