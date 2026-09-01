@@ -19,6 +19,8 @@
 set -o pipefail
 
 # ─── Colors (disabled if not a terminal) ──────────────────────
+# Define colors first (respecting TTY), THEN source utils.sh — its `:=` defaults
+# will not override these, so the no-TTY (plain) mode is preserved.
 if [[ -t 1 ]]; then
     RED='\033[0;31m'
     GREEN='\033[0;32m'
@@ -30,6 +32,9 @@ if [[ -t 1 ]]; then
 else
     RED='' GREEN='' CYAN='' YELLOW='' DIM='' BOLD='' RESET=''
 fi
+
+# Shared helpers (logging, error handling). Colors above are preserved.
+source "${0:A:h}/utils.sh" || { echo "Missing utils.sh next to $0" >&2; exit 1; }
 
 # ─── Help ─────────────────────────────────────────────────────
 show_help() {

@@ -3,6 +3,10 @@
 # Clears npm cache, removes node_modules & package-lock.json, reinstalls, and pushes the new lock file.
 # Features: VPN check, interactive repo selector menu, quiet output with spinner.
 
+# ─── Shared helpers (logging, VPN check, error handling). See utils.sh. ───────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/utils.sh" || { echo "Missing utils.sh in ${SCRIPT_DIR}" >&2; exit 1; }
+
 # ─── Configuration ───────────────────────────────────────────────────────────
 VPN_HOST="nexus3.disney.com"
 LOG_DIR="$HOME/my_tools/logs"
@@ -33,15 +37,9 @@ spin() {
   printf "\r"
 }
 
-# ─── VPN Check ───────────────────────────────────────────────────────────────
+# ─── VPN Check (shared helper) ───────────────────────────────────────────────
 echo ""
-echo "🔒 Checking VPN connection..."
-if ! nslookup "$VPN_HOST" 2>/dev/null | grep -q "Address:.*[0-9]"; then
-  echo "❌ Cannot resolve $VPN_HOST — are you connected to the VPN?"
-  echo "   Please connect and try again."
-  exit 1
-fi
-echo "✅ VPN is connected."
+check_vpn "$VPN_HOST"
 
 # ─── Repo Selection Menu ─────────────────────────────────────────────────────
 echo ""

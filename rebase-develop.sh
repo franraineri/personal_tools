@@ -8,17 +8,13 @@
 #                                         then dcl-cruise-101-spa, in that order.
 #
 
-set -e
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-DIM='\033[2m'
-BOLD='\033[1m'
-RESET='\033[0m'
-
 #----
 
 SCRIPT_DIR="${0:A:h}"
+
+# Shared helpers (colors, logging, error trap). See utils.sh.
+source "${SCRIPT_DIR}/utils.sh" || { echo "Missing utils.sh in ${SCRIPT_DIR}" >&2; exit 1; }
+utils_enable_error_trap
 
 # Hardcoded base directory where both repos live as siblings.
 REPOS_BASE="/Users/franco.raineri/devTools/DCL/Silent"

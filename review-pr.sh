@@ -23,11 +23,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/../output/review-pr"
 
+# ─── Shared helpers (logging, error handling). See utils.sh. ───
+source "${SCRIPT_DIR}/utils.sh" || { echo "Missing utils.sh in ${SCRIPT_DIR}" >&2; exit 1; }
+utils_enable_error_trap
+
 # ─── Dependency check ───
 for cmd in gh jq; do
   if ! command -v "$cmd" &>/dev/null; then
-    echo "❌ Required command '$cmd' not found. Please install it."
-    exit 1
+    die "Required command '$cmd' not found. Please install it."
   fi
 done
 
