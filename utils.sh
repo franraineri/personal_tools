@@ -66,12 +66,14 @@ die()       { log_error "$*"; exit 1; }
 # with the original status. Sourcing scripts opt in via utils_enable_error_trap.
 _utils_on_error() {
     local exit_code=$1 cmd=$2 line=$3 src=$4
-    # Ignore the "expected" non-zero from `return 1` used as control flow: only
-    # fire for a real, uncaught failure (exit_code already captured by the trap).
+    # Fire only once: the ERR trap can be reached more than once as the error
+    # propagates through functions under errexit.
+    [[ -n "${_UTILS_ERR_REPORTED:-}" ]] && exit "$exit_code"
+    _UTILS_ERR_REPORTED=1
     log_error "Unexpected failure (exit ${exit_code})"
-    [[ -n "$cmd"  ]] && echo "${RED}    command: ${cmd}${RESET}" >&2
+    [[ -n "$cmd" && "$cmd" != "exit "* ]] && echo "${RED}    command: ${cmd}${RESET}" >&2
     [[ -n "$src"  ]] && echo "${RED}    at:      ${src}:${line}${RESET}" >&2
-    log_info "If this looks like a bug in the tooling, re-run with more context or check the step above."
+    log_info "If this looks like a bug in the tooling, check the step above."
     exit "$exit_code"
 }
 
@@ -186,6 +188,10 @@ cherrypick_preflight() {
     [[ ${#shas[@]} -gt 0 ]] || { log_warn "Preflight: no SHAs to check."; return 0; }
 
     local ref="${upstream}/${release}"
+    # Refresh the release ref first so the simulation runs against the CURRENT
+    # release tip — a stale ref produces misleading "EMPTY"/conflict verdicts.
+    # Best-effort: offline is fine as long as the ref already exists locally.
+    git -C "$repo_dir" fetch "$upstream" "$release" >/dev/null 2>&1 || true
     git -C "$repo_dir" rev-parse --verify --quiet "$ref" >/dev/null \
         || die "Preflight: ${ref} not found. Fetch first."
 
@@ -279,15 +285,19 @@ cherrypick_preflight() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# autoresolve_known_conflicts <repo_dir>
+# autoresolve_known_conflicts <repo_dir> [side]
 #
-# During a real cherry-pick that stopped on conflict, resolve ONLY the known
-# manifest/CHANGELOG files by taking the INCOMING side (theirs) and staging them.
-# For package.json/package-lock.json "incoming" is the version being ported;
-# for CHANGELOG.md we take theirs too (additive entries).
+# Resolve ONLY the known manifest/CHANGELOG files (package.json, package-lock.json,
+# CHANGELOG.md) and stage them; leave real code conflicts untouched.
 #
-# Return: 0 if the ONLY remaining conflicts were known files (and are now
-# resolved/staged); 1 if any other (real code) file is still in conflict.
+#   side = "theirs" (default) → take the INCOMING side. Correct during a
+#          cherry-pick: incoming = the commit being ported.
+#   side = "ours"             → take the CURRENT side. Correct during a
+#          `git stash pop` after a rebase: ours = the rebased working tree
+#          (e.g. the newer develop version), dropping the stashed manifest.
+#
+# Return: 0 if the ONLY remaining conflicts were known files (now resolved);
+#         1 if any other (real code) file is still in conflict.
 # ─────────────────────────────────────────────────────────────────────────────
 autoresolve_known_conflicts() {
     if [[ "$_UTILS_SHELL" != "zsh" ]]; then
@@ -295,6 +305,12 @@ autoresolve_known_conflicts() {
         return 2
     fi
     local repo_dir="$1"
+    local side="${2:-theirs}"
+    case "$side" in
+        ours|theirs) ;;
+        *) log_error "autoresolve_known_conflicts: side must be 'ours' or 'theirs', got '${side}'."; return 2 ;;
+    esac
+
     local conflicted
     conflicted=$(git -C "$repo_dir" diff --name-only --diff-filter=U 2>/dev/null)
     [[ -n "$conflicted" ]] || return 0
@@ -303,12 +319,12 @@ autoresolve_known_conflicts() {
     for f in "${(f)conflicted}"; do
         [[ -n "$f" ]] || continue
         if _is_known_autoresolve "${f:t}"; then
-            # Take the incoming (theirs) side for manifests/CHANGELOG.
-            if git -C "$repo_dir" checkout --theirs -- "$f" >/dev/null 2>&1; then
+            if git -C "$repo_dir" checkout "--${side}" -- "$f" >/dev/null 2>&1; then
                 git -C "$repo_dir" add -- "$f" >/dev/null 2>&1
                 resolved_any=true
-                log_info "  auto-resolved (took incoming): ${f}"
+                log_info "  auto-resolved (took ${side}): ${f}"
             else
+                log_warn "  could not auto-resolve ${f} (checkout --${side} failed)"
                 real_remaining=true
             fi
         else
@@ -320,6 +336,6 @@ autoresolve_known_conflicts() {
         [[ "$resolved_any" == true ]] && log_info "Resolved known files; real conflicts remain."
         return 1
     fi
-    log_ok "All conflicts were known files and were auto-resolved."
+    log_ok "All conflicts were known files and were auto-resolved (took ${side})."
     return 0
 }

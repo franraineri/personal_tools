@@ -33,8 +33,15 @@ else
     RED='' GREEN='' CYAN='' YELLOW='' DIM='' BOLD='' RESET=''
 fi
 
+# Must run with zsh (uses zsh arrays/idioms).
+if [[ -z "${ZSH_VERSION:-}" ]]; then
+    echo "This script must be run with zsh (not bash/sh)." >&2
+    echo "  Run:  ./test-summary.sh [OPTIONS]   or   zsh test-summary.sh [OPTIONS]" >&2
+    exit 1
+fi
+
 # Shared helpers (logging, error handling). Colors above are preserved.
-source "${0:A:h}/utils.sh" || { echo "Missing utils.sh next to $0" >&2; exit 1; }
+source "${${(%):-%x}:A:h}/utils.sh" || { echo "Missing utils.sh next to $0" >&2; exit 1; }
 
 # ─── Help ─────────────────────────────────────────────────────
 show_help() {

@@ -9,9 +9,12 @@
 #   3. Sync: checkout develop, fetch --all, create local <release> from upstream
 #   4. Create the hotfix branch
 #   5. Resolve the PR's commit SHA(s) via the GitHub API (gh)
-#   6. Cherry-pick (auto -m 1 when the SHA is a merge commit)
-#   7. Test gate (via test-summary.sh) — skippable with --skip-tests
-#   8. Push and open a PR targeting upstream/<release>
+#   6. Auto-drop commits already applied on <release> (would cherry-pick empty)
+#   7. Cherry-pick (auto -m 1 when the SHA is a merge commit)
+#   8. Test gate (via test-summary.sh) — skippable with --skip-tests
+#   9. Push and open a PR targeting upstream/<release> (reuses an existing open
+#      PR for the branch if there is one), then open the new PR in the browser
+#      and print a summary (branch, commits, tickets, PR URL)
 #
 # NOT automated here (these were done by the AI in the original session, not by
 # a script): fetching Jira context via MCP, "manually verifying" flaky tests,
@@ -41,9 +44,10 @@
 #       --shas <A,B,C>      [SHA mode] Comma-separated SHAs (same as repeating --sha).
 #
 #   TICKET
-#   -t, --ticket <ID>       Jira ticket ID (e.g. MERLIN-4953). Repeatable.
-#                           REQUIRED in PR mode. OPTIONAL in SHA mode — if omitted,
-#                           tickets are inferred from the commit subjects.
+#   -t, --ticket <ID>       Jira ticket ID (e.g. MERLIN-4953). Repeatable. OPTIONAL
+#                           in every mode: if omitted, tickets are inferred from the
+#                           commit subjects, and if none can be inferred the flow
+#                           still completes — the PR just omits ticket descriptions.
 #
 #   OPTIONAL
 #   --repo <owner/name>     Upstream repo               (default: auto-detected from upstream remote)
@@ -67,6 +71,15 @@
 #
 
 set -e
+
+# This script relies on zsh-specific features (array flags ${(@f)}, ${(@s:,:)},
+# 1-based arrays). Refuse to run under bash/sh with a clear message rather than
+# failing cryptically later.
+if [[ -z "${ZSH_VERSION:-}" ]]; then
+    echo "This script must be run with zsh (not bash/sh)." >&2
+    echo "  Run:  ./hotfix-cherry-pick.sh ...   or   zsh hotfix-cherry-pick.sh ..." >&2
+    exit 1
+fi
 
 # Absolute path to this script (for --help rendering) and its directory
 # (to locate sibling tools like utils.sh and test-summary.sh).
@@ -111,7 +124,7 @@ SKIP_PREFLIGHT=false
 
 usage() {
     # Print the leading comment block (usage/options) with the leading "# " stripped.
-    sed -n '2,67p' "$SCRIPT_PATH" | sed 's/^#\{1,\} \{0,1\}//; s/^#$//'
+    sed -n '2,68p' "$SCRIPT_PATH" | sed 's/^#\{1,\} \{0,1\}//; s/^#$//'
     exit "${1:-0}"
 }
 
@@ -156,8 +169,9 @@ parse_args() {
         SHA_MODE=false
         [[ -n "$PR_NUMBER" ]] || die "Provide --pr (PR mode) or --sha/--shas (SHA mode). See --help."
         [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || die "--pr must be a number, got: $PR_NUMBER"
-        # PR mode still requires exactly one ticket for the hotfix PR title/body.
-        [[ ${#TICKETS[@]} -ge 1 ]] || die "Missing --ticket (e.g. MERLIN-4953). See --help."
+        # Ticket is OPTIONAL: if none is given, the flow continues and the PR
+        # simply omits ticket descriptions (inferred from commits when possible).
+        [[ ${#TICKETS[@]} -ge 1 ]] || log_info "No --ticket given; continuing without ticket descriptions."
     fi
 
     # Branch name: in push-existing mode default to the CURRENT branch (we don't
@@ -283,8 +297,8 @@ PR_TITLE=""
 PR_URL=""
 PR_STATE=""
 CHERRY_SHAS=()   # list of SHAs to cherry-pick, in order
-IS_MERGE_PICK=false
-HOTFIX_PR_URL="" # URL of the hotfix PR opened by this run
+HOTFIX_PR_URL="" # URL of the hotfix PR opened (or reused) by this run
+HOTFIX_PR_EXISTED=false  # true when an open PR already existed and was reused
 SOURCE_PRS=()     # source PR numbers derived from each commit subject "(#NNNN)"
 SOURCE_TICKETS=() # Jira ticket IDs (e.g. MERLIN-4429) inferred from each commit subject
 INFERRED_TICKETS=() # de-duplicated tickets inferred across all commits (for PR body/title)
@@ -330,25 +344,73 @@ ensure_shas_present() {
     done
 }
 
-# Warn (do not abort) about any CHERRY_SHAS whose change is already present on
-# upstream/<release>. Uses `git cherry`: a "-" prefix means an equivalent patch
-# already exists downstream, so cherry-picking it would come up empty.
-warn_already_applied() {
+# SHAs auto-dropped because their change is already on the release branch.
+DROPPED_SHAS=()
+
+# Detect whether a commit's change is already present on <ref> and would produce
+# an EMPTY cherry-pick. `git cherry` (patch-id) is a fast first signal, but it
+# can miss no-ops (e.g. a deletion of a line that no longer exists), so we also
+# confirm with a real, throwaway `cherry-pick --no-commit` in a temp index.
+# Echoes "empty" or "apply". Never mutates the working tree/branch.
+_pick_would_be_empty() {
+    local ref="$1" sha="$2"
+
+    # Fast path: git cherry marks "- <sha>" when an equivalent patch exists.
+    local cherry_mark
+    cherry_mark=$(run_git cherry "$ref" "$sha" 2>/dev/null \
+        | awk -v s="$sha" '$2 ~ ("^" substr(s,1,12)) || $2==s {print $1; exit}')
+    if [[ "$cherry_mark" == "-" ]]; then
+        echo "empty"; return 0
+    fi
+
+    # Confirm via the tree: does <sha>'s change still differ from <ref>? Compare
+    # the trees the commit touches. If applying it onto <ref> changes nothing,
+    # it's a no-op. We do a cheap diff of the commit's files between <ref> and
+    # the commit's own result.
+    local files
+    files=$(run_git show --no-renames --name-only --format='' "$sha" 2>/dev/null | sed '/^$/d')
+    [[ -n "$files" ]] || { echo "empty"; return 0; }  # commit touches nothing → empty
+
+    local f differs=false
+    for f in "${(f)files}"; do
+        # Compare <ref>:f against <sha>:f. If identical, applying changes nothing
+        # for that file. If ANY file differs, the pick is not empty.
+        if ! run_git diff --quiet "$ref:$f" "$sha:$f" 2>/dev/null; then
+            differs=true; break
+        fi
+    done
+    [[ "$differs" == true ]] && echo "apply" || echo "empty"
+}
+
+# Auto-drop any CHERRY_SHAS whose change is already on upstream/<release>: they
+# would cherry-pick empty and halt the run. Dropped SHAs are logged and moved to
+# DROPPED_SHAS; CHERRY_SHAS is rewritten to the still-applicable commits, and the
+# derived metadata (PRs/tickets) is re-populated.
+filter_already_applied() {
     local ref="${UPSTREAM_REMOTE}/${RELEASE_BRANCH}"
     run_git rev-parse --verify --quiet "$ref" >/dev/null || return 0
 
-    local sha status_char found=false
+    local sha kept=() sha_line
+    DROPPED_SHAS=()
     for sha in "${CHERRY_SHAS[@]}"; do
-        # `git cherry <upstream> <commit>` prints "- <sha>" if already applied.
-        status_char=$(run_git cherry "$ref" "$sha" 2>/dev/null | awk -v s="$sha" '$2 ~ ("^" substr(s,1,12)) || $2==s {print $1; exit}')
-        if [[ "$status_char" == "-" ]]; then
-            found=true
-            log_warn "  ${sha:0:12} appears ALREADY APPLIED on ${ref} — cherry-pick may be empty."
+        if [[ "$(_pick_would_be_empty "$ref" "$sha")" == "empty" ]]; then
+            DROPPED_SHAS+=("$sha")
+            log_warn "  ${sha:0:12} already applied on ${RELEASE_BRANCH} — DROPPING (empty pick)."
+        else
+            kept+=("$sha")
         fi
     done
-    if [[ "$found" == true ]]; then
-        log_warn "Already-applied commits will halt the cherry-pick when they turn out empty."
-        log_info "Remove them from your --sha list, or continue and resolve the empty pick manually."
+
+    if [[ ${#DROPPED_SHAS[@]} -gt 0 ]]; then
+        CHERRY_SHAS=("${kept[@]}")
+        populate_source_metadata   # refresh PR/ticket metadata for the kept set
+        log_info "Dropped ${#DROPPED_SHAS[@]} already-applied commit(s); ${#CHERRY_SHAS[@]} remain."
+    fi
+
+    # Nothing left to do → stop cleanly (not an error: the work is already there).
+    if [[ ${#CHERRY_SHAS[@]} -eq 0 ]]; then
+        log_ok "All requested commits are already on ${RELEASE_BRANCH}. Nothing to hotfix."
+        exit 0
     fi
 }
 
@@ -360,8 +422,8 @@ resolve_explicit_shas() {
     CHERRY_SHAS=("${EXPLICIT_SHAS[@]}")
     populate_source_metadata
 
-    # Early check: warn about commits already present on the release branch.
-    warn_already_applied
+    # Auto-drop commits already on the release branch (would cherry-pick empty).
+    filter_already_applied
 
     local sha i=1 subject
     for sha in "${CHERRY_SHAS[@]}"; do
@@ -370,7 +432,7 @@ resolve_explicit_shas() {
         local pr_disp="(no PR)"
         [[ -n "$pr" ]] && pr_disp="#${pr}"
         log_info "  ${sha:0:12} → PR ${pr_disp}${tk:+ · ${tk}} — ${subject}"
-        ((i++))
+        i=$((i + 1))
     done
     log_ok "Resolved ${#CHERRY_SHAS[@]} explicit commit(s)."
 }
@@ -394,8 +456,8 @@ resolve_pr_commits() {
 
     if [[ -n "$merge_oid" ]]; then
         # Merged PR → cherry-pick the merge commit with mainline parent 1.
+        # (cherry_pick_commits auto-detects the merge and applies -m 1.)
         CHERRY_SHAS=("$merge_oid")
-        IS_MERGE_PICK=true
         log_info "PR is merged. Using merge commit ${merge_oid:0:12} (cherry-pick -m 1)."
     else
         # Not merged (or squash/rebase) → cherry-pick the individual commits.
@@ -403,14 +465,13 @@ resolve_pr_commits() {
         shas=$(GH_HOST="$GIT_HOST" "${gh_view[@]}" --json commits --jq '.commits[].oid' 2>/dev/null)
         [[ -n "$shas" ]] || die "PR #${PR_NUMBER} has no commits and no merge commit."
         CHERRY_SHAS=("${(@f)shas}")
-        IS_MERGE_PICK=false
         log_info "PR not merged. Cherry-picking ${#CHERRY_SHAS[@]} individual commit(s)."
     fi
 
     # Make sure the commits are present locally (fetch objects if needed).
     ensure_shas_present "${CHERRY_SHAS[@]}"
     populate_source_metadata
-    warn_already_applied
+    filter_already_applied
     log_ok "Resolved ${#CHERRY_SHAS[@]} commit(s) for PR #${PR_NUMBER}."
 }
 
@@ -506,7 +567,7 @@ build_pr_body() {
             else
                 sha_lines+="- \`${sha:0:12}\` — ${subject}"$'\n'
             fi
-            ((i++))
+            i=$((i + 1))
         done
     else
         for sha in "${CHERRY_SHAS[@]}"; do
@@ -525,15 +586,14 @@ build_pr_body() {
         source_pr_line="${uniq[*]}"
     fi
 
-    # Ticket list for the summary: explicit --ticket values, else tickets inferred
-    # from the commit subjects, else a clear placeholder.
-    local ticket_line
+    # Ticket list for the summary: explicit --ticket values take precedence, else
+    # tickets inferred from the commit subjects. When neither exists, ticket lines
+    # are OMITTED entirely (no "(none)" noise) and the flow continues normally.
+    local ticket_line="" has_tickets=false
     if [[ ${#TICKETS[@]} -gt 0 ]]; then
-        ticket_line="${TICKETS[*]}"
+        ticket_line="${TICKETS[*]}"; has_tickets=true
     elif [[ ${#INFERRED_TICKETS[@]} -gt 0 ]]; then
-        ticket_line="${INFERRED_TICKETS[*]} (inferred from commits)"
-    else
-        ticket_line="(none provided)"
+        ticket_line="${INFERRED_TICKETS[*]} (inferred from commits)"; has_tickets=true
     fi
 
     {
@@ -542,10 +602,14 @@ build_pr_body() {
         if [[ "$SHA_MODE" == true ]]; then
             echo "Hotfix onto \`${RELEASE_BRANCH}\`, cherry-picking ${#CHERRY_SHAS[@]} commit(s)."
             echo ""
-            echo "- Jira tickets: ${ticket_line}"
+            [[ "$has_tickets" == true ]] && echo "- Jira tickets: ${ticket_line}"
             [[ -n "$source_pr_line" ]] && echo "- Original PRs: ${source_pr_line}"
         else
-            echo "Hotfix for **${ticket_line}**, cherry-picked from PR #${PR_NUMBER} onto \`${RELEASE_BRANCH}\`."
+            if [[ "$has_tickets" == true ]]; then
+                echo "Hotfix for **${ticket_line}**, cherry-picked from PR #${PR_NUMBER} onto \`${RELEASE_BRANCH}\`."
+            else
+                echo "Hotfix cherry-picked from PR #${PR_NUMBER} onto \`${RELEASE_BRANCH}\`."
+            fi
         fi
         echo ""
         echo "## Source"
@@ -593,19 +657,40 @@ open_pr() {
     local origin_owner body_file pr_title
     origin_owner=$(git -C "$REPO_DIR" remote get-url "$ORIGIN_REMOTE" \
         | sed -E 's#(https?://[^/]+/|git@[^:]+:)##; s#/.*$##')
+
+    # Idempotency: if an OPEN PR already exists for this head branch, reuse it
+    # instead of failing on `gh pr create`. gh matches head as owner:branch.
+    local existing
+    existing=$(GH_HOST="$GIT_HOST" gh pr list \
+        --repo "$REPO" \
+        --head "$HOTFIX_BRANCH" \
+        --state open \
+        --json url --jq '.[0].url // ""' 2>/dev/null)
+    if [[ -n "$existing" ]]; then
+        HOTFIX_PR_URL="$existing"
+        HOTFIX_PR_EXISTED=true
+        log_ok "PR already exists for ${HOTFIX_BRANCH}; reusing it:"
+        echo "${BOLD}${HOTFIX_PR_URL}${RESET}"
+        return 0
+    fi
+
     body_file=$(mktemp)
     build_pr_body "$body_file"
+    # Ticket tag for the title: explicit --ticket, else inferred, else nothing.
+    local ticket_tag=""
+    if [[ ${#TICKETS[@]} -gt 0 ]]; then
+        ticket_tag="${TICKETS[*]} "
+    elif [[ ${#INFERRED_TICKETS[@]} -gt 0 ]]; then
+        ticket_tag="${INFERRED_TICKETS[*]} "
+    fi
+
     if [[ "$SHA_MODE" == true ]]; then
-        local ticket_tag=""
-        if [[ ${#TICKETS[@]} -gt 0 ]]; then
-            ticket_tag="${TICKETS[*]} "
-        elif [[ ${#INFERRED_TICKETS[@]} -gt 0 ]]; then
-            ticket_tag="${INFERRED_TICKETS[*]} "
-        fi
         pr_title="[HOTFIX] ${ticket_tag}${RELEASE_BRANCH} updates (${#CHERRY_SHAS[@]} commits)"
     else
-        pr_title="[HOTFIX] ${TICKETS[*]} ${PR_TITLE:-cherry-pick from PR #$PR_NUMBER}"
+        pr_title="[HOTFIX] ${ticket_tag}${PR_TITLE:-cherry-pick from PR #$PR_NUMBER}"
     fi
+    # Collapse any accidental double spaces (e.g. empty ticket tag).
+    pr_title="${pr_title//  / }"
 
     HOTFIX_PR_URL=$(GH_HOST="$GIT_HOST" gh pr create \
         --repo "$REPO" \
@@ -636,7 +721,10 @@ push_existing_flow() {
     [[ -z "$(run_git status --porcelain)" ]] \
         || die "Working tree not clean. Commit or stash changes before --push-existing."
 
-    # Make sure we can see the release branch for the body/diff.
+    # Refresh the release ref so the commit list (branch minus release) is
+    # accurate even if the local ref is stale. Best-effort — offline is fine if
+    # the ref already exists locally.
+    run_git fetch "$UPSTREAM_REMOTE" "$RELEASE_BRANCH" >/dev/null 2>&1 || true
     run_git rev-parse --verify --quiet "${UPSTREAM_REMOTE}/${RELEASE_BRANCH}" >/dev/null \
         || die "${UPSTREAM_REMOTE}/${RELEASE_BRANCH} not found. Fetch first."
 
@@ -659,17 +747,56 @@ push_existing_flow() {
 
     if [[ "$NO_PR" == true ]]; then
         log_warn "Skipping PR creation (--no-pr). Branch pushed only."
-        log_ok "Done. ${TICKETS[*]:-Hotfix} pushed to ${ORIGIN_REMOTE}/${HOTFIX_BRANCH} (no PR)."
+        print_summary
         return 0
     fi
 
     open_pr
+    print_summary
+    maybe_open_pr_in_browser
+}
 
-    log_ok "Done. ${TICKETS[*]:-Hotfix} pushed from ${HOTFIX_BRANCH}."
-    if [[ -n "$HOTFIX_PR_URL" ]]; then
-        echo ""
-        log_step "Hotfix PR: ${HOTFIX_PR_URL}"
+# ─────────────────────────────────────────────────────────────────────────────
+# Final summary + open PR in browser
+# ─────────────────────────────────────────────────────────────────────────────
+print_summary() {
+    # Tickets: explicit, else inferred, else "none".
+    local tickets=""
+    if [[ ${#TICKETS[@]} -gt 0 ]]; then
+        tickets="${TICKETS[*]}"
+    elif [[ ${#INFERRED_TICKETS[@]} -gt 0 ]]; then
+        tickets="${INFERRED_TICKETS[*]} (inferred)"
+    else
+        tickets="(none)"
     fi
+
+    echo ""
+    log_step "Summary"
+    log_info "  Release branch: ${RELEASE_BRANCH}"
+    log_info "  Hotfix branch:  ${HOTFIX_BRANCH}  → pushed to ${ORIGIN_REMOTE}"
+    log_info "  Commits:        ${#CHERRY_SHAS[@]} cherry-picked"
+    [[ ${#DROPPED_SHAS[@]} -gt 0 ]] && log_info "  Skipped:        ${#DROPPED_SHAS[@]} already-applied commit(s)"
+    log_info "  Tickets:        ${tickets}"
+    if [[ -n "$HOTFIX_PR_URL" ]]; then
+        if [[ "$HOTFIX_PR_EXISTED" == true ]]; then
+            log_info "  PR (existing):  ${HOTFIX_PR_URL}"
+        else
+            log_info "  PR (created):   ${HOTFIX_PR_URL}"
+        fi
+    fi
+}
+
+# Open the hotfix PR in the browser, but ONLY when it was freshly created in this
+# run (not when an existing one was reused, and not when --no-pr was used).
+maybe_open_pr_in_browser() {
+    [[ -n "$HOTFIX_PR_URL" ]] || return 0
+    [[ "$HOTFIX_PR_EXISTED" == true ]] && return 0
+    log_info "Opening the new PR in your browser..."
+    if command -v gh >/dev/null 2>&1; then
+        GH_HOST="$GIT_HOST" gh pr view "$HOTFIX_PR_URL" --web >/dev/null 2>&1 && return 0
+    fi
+    # Fallback to the OS opener.
+    command -v open >/dev/null 2>&1 && open "$HOTFIX_PR_URL" >/dev/null 2>&1 || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -691,7 +818,7 @@ main() {
         [[ ${#TICKETS[@]} -gt 0 ]] && log_info "Tickets: ${TICKETS[*]}"
     else
         log_info "Mode:    PR"
-        log_info "Ticket:  ${TICKETS[*]}"
+        [[ ${#TICKETS[@]} -gt 0 ]] && log_info "Ticket:  ${TICKETS[*]}"
         log_info "PR:      #${PR_NUMBER}"
     fi
     log_info "Repo:    ${REPO}"
@@ -759,17 +886,13 @@ main() {
 
     if [[ "$NO_PR" == true ]]; then
         log_warn "Skipping PR creation (--no-pr). Branch pushed only."
-        log_ok "Done. ${TICKETS[*]:-Hotfix} pushed to ${ORIGIN_REMOTE}/${HOTFIX_BRANCH} (no PR)."
+        print_summary
         return 0
     fi
 
     open_pr
-
-    log_ok "Done. ${TICKETS[*]:-Hotfix} applied to ${RELEASE_BRANCH}."
-    if [[ -n "$HOTFIX_PR_URL" ]]; then
-        echo ""
-        log_step "Hotfix PR: ${HOTFIX_PR_URL}"
-    fi
+    print_summary
+    maybe_open_pr_in_browser
 }
 
 main "$@"

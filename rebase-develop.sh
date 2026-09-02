@@ -10,10 +10,20 @@
 
 #----
 
-SCRIPT_DIR="${0:A:h}"
+# This script uses zsh-specific features (safe_stash_pop uses ${file:t}, etc.).
+# Refuse to run under bash/sh with a clear message instead of doing a partial
+# rebase and failing halfway.
+if [[ -z "${ZSH_VERSION:-}" ]]; then
+    echo "This script must be run with zsh (not bash/sh)." >&2
+    echo "  Run:  ./rebase-develop.sh [--full]   or   zsh rebase-develop.sh [--full]" >&2
+    exit 1
+fi
+
+# Resolve this script's directory (zsh).
+SCRIPT_DIR="${${(%):-%x}:A:h}"
 
 # Shared helpers (colors, logging, error trap). See utils.sh.
-source "${SCRIPT_DIR}/utils.sh" || { echo "Missing utils.sh in ${SCRIPT_DIR}" >&2; exit 1; }
+source "${SCRIPT_DIR}/utils.sh" || { echo "Missing utils.sh in '${SCRIPT_DIR}'" >&2; exit 1; }
 utils_enable_error_trap
 
 # Hardcoded base directory where both repos live as siblings.
@@ -47,41 +57,61 @@ safe_stash_pop() {
         return 0
     fi
 
-    # Collect the list of files still in conflict (unmerged).
-    local conflicts
-    conflicts=$(git diff --name-only --diff-filter=U)
-
-    if [[ -z "$conflicts" ]]; then
+    # Auto-resolve ONLY manifest/CHANGELOG conflicts by keeping OUR side (the
+    # rebased working tree = newer develop), via the shared helper. Any real code
+    # conflict is left for the user. (See utils.sh — single source of truth.)
+    if autoresolve_known_conflicts "$PWD" ours; then
+        # Only known files conflicted and were resolved. Drop the stash entry
+        # that git kept because of the conflict.
+        git stash drop
         return 0
     fi
 
-    local other_conflicts=false
-    local file
-    while IFS= read -r file; do
-        case "${file:t}" in
-            package.json|package-lock.json)
-                # Keep develop's version (working tree), drop the stashed one.
-                git checkout --ours -- "$file"
-                git add -- "$file"
-                ;;
-            *)
-                other_conflicts=true
-                ;;
-        esac
-    done <<< "$conflicts"
-
-    if [[ "$other_conflicts" == true ]]; then
-        echo "${RED}${BOLD}✗ Stash pop conflicts remain. Resolve them, then git stash drop.${RESET}"
-        return 1
-    fi
-
-    # Only package.json/package-lock.json conflicts existed and were resolved.
-    # Drop the now-applied stash entry that git kept because of the conflict.
-    git stash drop
-    return 0
+    echo "${RED}${BOLD}✗ Stash pop conflicts remain. Resolve them, then git stash drop.${RESET}"
+    return 1
 }
 
 #----
+
+# rebase_with_autoresolve <onto> — `git rebase <onto>`, auto-resolving conflicts
+# that involve ONLY manifest/CHANGELOG files as they occur. A rebase can stop on
+# several commits; we loop: on a manifest-only conflict, keep OUR side (the base
+# = develop) via the shared helper, `git add`, and `rebase --continue`, until the
+# rebase finishes or a real code conflict appears (then return 1, leaving the
+# rebase in progress for the user).
+rebase_with_autoresolve() {
+    local onto="$1"
+
+    # Start the rebase. set +e so a conflict return doesn't abort the script.
+    set +e
+    git rebase "$onto"
+    local rc=$?
+    set -e
+
+    # Loop while the rebase is paused on conflicts.
+    while [[ $rc -ne 0 && -d .git/rebase-merge ]] || [[ $rc -ne 0 && -d .git/rebase-apply ]]; do
+        # Are there unmerged files? If not, the rebase failed for another reason.
+        local unmerged
+        unmerged=$(git diff --name-only --diff-filter=U)
+        if [[ -z "$unmerged" ]]; then
+            return 1
+        fi
+
+        # Try to auto-resolve manifests/CHANGELOG keeping OUR side (develop base).
+        if ! autoresolve_known_conflicts "$PWD" ours; then
+            # Real code conflict remains — hand back to the user.
+            return 1
+        fi
+
+        # All conflicts for THIS step were known files and are staged. Continue.
+        set +e
+        GIT_EDITOR=true git rebase --continue
+        rc=$?
+        set -e
+    done
+
+    return $rc
+}
 
 # rebase_repo — Runs the full stash + update develop + rebase flow in the
 # current working directory. Assumes CWD is a git repo.
@@ -125,16 +155,18 @@ rebase_repo() {
     echo "${DIM}Returning to ${BRANCH}...${RESET}"
     git checkout "$BRANCH"
 
-    # 5. Rebase onto develop
+    # 5. Rebase onto develop, auto-resolving manifest/CHANGELOG conflicts as they
+    #    appear (the rebase can stop on several commits). During a rebase the
+    #    incoming commit is "theirs"; we keep OUR side (develop) for manifests so
+    #    the branch ends up on develop's package versions.
     echo "${DIM}Rebasing onto develop...${RESET}"
-    if git rebase develop; then
-        echo "${GREEN}${BOLD}✓ Rebase successful.${RESET}"
-    else
-        echo "${RED}${BOLD}✗ Rebase conflicts detected. Resolve them, then:${RESET}!"
+    if ! rebase_with_autoresolve develop; then
+        echo "${RED}${BOLD}✗ Rebase conflicts remain (real code). Resolve them, then:${RESET}"
         echo "${DIM}  git rebase --continue (or --abort)${RESET}"
-        echo "${DIM}  and git stash pop)${RESET}"
+        echo "${DIM}  and re-run, or git stash pop manually.${RESET}"
         return 1
     fi
+    echo "${GREEN}${BOLD}✓ Rebase successful.${RESET}"
 
     # 6. Pop stash if we stashed
     if [[ "$STASHED" == true ]]; then

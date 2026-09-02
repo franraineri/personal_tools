@@ -16,8 +16,15 @@
 #   ./bump-lib-version.sh -- -2    # Use -- for negative numbers
 #
 
+# Must run with zsh (uses ${0:A:h} and zsh idioms).
+if [[ -z "${ZSH_VERSION:-}" ]]; then
+    echo "This script must be run with zsh (not bash/sh)." >&2
+    echo "  Run:  ./bump-lib-version.sh [N]   or   zsh bump-lib-version.sh [N]" >&2
+    exit 1
+fi
+
 # Shared helpers (logging, error trap). See utils.sh.
-source "${0:A:h}/utils.sh" || { echo "Missing utils.sh next to $0" >&2; exit 1; }
+source "${${(%):-%x}:A:h}/utils.sh" || { echo "Missing utils.sh next to $0" >&2; exit 1; }
 utils_enable_error_trap
 
 # Parse optional increment (default: +1)
