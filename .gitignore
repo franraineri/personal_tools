@@ -1,0 +1,13 @@
+.DS_Store
+logs/
+
+# graphify: keep the shareable outputs (graph.json, GRAPH_REPORT.md, graph.html,
+# manifest.json) as agent context; ignore the local/transient bits.
+graphify-out/*
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/.graphify_*.json
+graphify-out/cost.json
+
+# generated PR/merge reports
+merged-prs-*.md
