@@ -26,10 +26,23 @@ SCRIPT_DIR="${${(%):-%x}:A:h}"
 source "${SCRIPT_DIR}/utils.sh" || { echo "Missing utils.sh in '${SCRIPT_DIR}'" >&2; exit 1; }
 utils_enable_error_trap
 
-# Hardcoded base directory where both repos live as siblings.
-REPOS_BASE="/Users/franco.raineri/devTools/DCL/Silent"
-LIB_REPO="${REPOS_BASE}/dcl-ui-global-components-library-v2"
-SPA_REPO="${REPOS_BASE}/dcl-cruise-101-spa"
+# ─────────────────────────────────────────────────────────────────────────────
+# Config — precedence: env var > built-in default. A Koda executor (or
+# `koda project`) can export these so the flow runs against any repo layout,
+# base branch, or remote without editing the script:
+#   REBASE_BASE_BRANCH     → BASE_BRANCH      (default: develop)
+#   REBASE_UPSTREAM_REMOTE → UPSTREAM_REMOTE  (default: upstream)
+#   REBASE_REPOS_BASE      → REPOS_BASE       (--full: parent dir of the repos)
+#   REBASE_LIB_REPO        → LIB_REPO         (--full: library repo dir)
+#   REBASE_SPA_REPO        → SPA_REPO         (--full: SPA repo dir)
+# --full defaults keep the DCL layout (library + SPA as siblings under REPOS_BASE)
+# but any of the three paths can be overridden independently.
+# ─────────────────────────────────────────────────────────────────────────────
+BASE_BRANCH="${REBASE_BASE_BRANCH:-develop}"
+UPSTREAM_REMOTE="${REBASE_UPSTREAM_REMOTE:-upstream}"
+REPOS_BASE="${REBASE_REPOS_BASE:-/Users/franco.raineri/devTools/DCL/Silent}"
+LIB_REPO="${REBASE_LIB_REPO:-${REPOS_BASE}/dcl-ui-global-components-library-v2}"
+SPA_REPO="${REBASE_SPA_REPO:-${REPOS_BASE}/dcl-cruise-101-spa}"
 
 go_bump_lib_version() {
     echo ""
@@ -120,14 +133,14 @@ rebase_repo() {
     local BRANCH
     BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-    if [[ "$BRANCH" == "develop" ]]; then
-        echo "${DIM}Already on develop, just pulling upstream...${RESET}"
+    if [[ "$BRANCH" == "$BASE_BRANCH" ]]; then
+        echo "${DIM}Already on ${BASE_BRANCH}, just pulling upstream...${RESET}"
         if [[ -n $(git status --porcelain) ]]; then
-            git stash -m "rebase-develop: auto-stash on develop"
+            git stash -m "rebase-develop: auto-stash on ${BASE_BRANCH}"
         fi
         git stash -m "rebase-develop: auto-stash on ${BRANCH}"
-        git pull upstream develop
-        echo "${GREEN}${BOLD}✓ develop is up to date.${RESET}"
+        git pull "$UPSTREAM_REMOTE" "$BASE_BRANCH"
+        echo "${GREEN}${BOLD}✓ ${BASE_BRANCH} is up to date.${RESET}"
         echo "${DIM}Restoring stashed changes...${RESET}"
         safe_stash_pop || return 1
         go_bump_lib_version
@@ -147,9 +160,9 @@ rebase_repo() {
     fi
 
     # 3. Update develop from upstream
-    echo "${DIM}Updating develop from upstream...${RESET}"
-    git checkout develop
-    git pull upstream develop
+    echo "${DIM}Updating ${BASE_BRANCH} from ${UPSTREAM_REMOTE}...${RESET}"
+    git checkout "$BASE_BRANCH"
+    git pull "$UPSTREAM_REMOTE" "$BASE_BRANCH"
 
     # 4. Return to feature branch
     echo "${DIM}Returning to ${BRANCH}...${RESET}"
@@ -159,8 +172,8 @@ rebase_repo() {
     #    appear (the rebase can stop on several commits). During a rebase the
     #    incoming commit is "theirs"; we keep OUR side (develop) for manifests so
     #    the branch ends up on develop's package versions.
-    echo "${DIM}Rebasing onto develop...${RESET}"
-    if ! rebase_with_autoresolve develop; then
+    echo "${DIM}Rebasing onto ${BASE_BRANCH}...${RESET}"
+    if ! rebase_with_autoresolve "$BASE_BRANCH"; then
         echo "${RED}${BOLD}✗ Rebase conflicts remain (real code). Resolve them, then:${RESET}"
         echo "${DIM}  git rebase --continue (or --abort)${RESET}"
         echo "${DIM}  and re-run, or git stash pop manually.${RESET}"
@@ -174,8 +187,7 @@ rebase_repo() {
         safe_stash_pop || return 1
     fi
 
-    echo "${GREEN}${BOLD}✓ Done. ${BRANCH} is up to date with develop.${RESET}"
-    go_bump_lib_version
+    echo "${GREEN}${BOLD}✓ Done. ${BRANCH} is up to date with ${BASE_BRANCH}.${RESET}"
 }
 
 #----
@@ -217,9 +229,11 @@ if [[ "$FULL" == true ]]; then
     done
 
     # final summary across all repos.
-    echo "${GREEN}${BOLD}✓ Full rebase complete: all ${total} repos are up to date with develop.${RESET}"
+    echo "${GREEN}${BOLD}✓ Full rebase complete: all ${total} repos are up to date with ${BASE_BRANCH}.${RESET}"
+    go_bump_lib_version
     exit 0
 fi
 
 # Default mode: run in the current directory.
 rebase_repo
+go_bump_lib_version

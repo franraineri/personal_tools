@@ -21,7 +21,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUTPUT_DIR="$SCRIPT_DIR/../output/review-pr"
+
+# ─── Config — precedence: env var > built-in default. ───
+# Mirrors the HOTFIX_* / REVIEW_* convention so a Koda executor can point the
+# code_review_agent at any host/agent/output without editing the script:
+#   REVIEW_OUTPUT_DIR → OUTPUT_DIR  (default: ~/output/review-pr — shared with
+#                                    post-review-comments.sh so they never diverge)
+#   REVIEW_GH_HOST    → GH_HOST     (default: github.disney.com; used in help/hints)
+#   REVIEW_KIRO_AGENT → KIRO_AGENT  (default: dcl-dev; the kiro-cli review agent)
+OUTPUT_DIR="${REVIEW_OUTPUT_DIR:-$HOME/output/review-pr}"
+GH_HOST="${REVIEW_GH_HOST:-github.disney.com}"
+KIRO_AGENT="${REVIEW_KIRO_AGENT:-dcl-dev}"
 
 # ─── Shared helpers (logging, error handling). See utils.sh. ───
 source "${SCRIPT_DIR}/utils.sh" || { echo "Missing utils.sh in ${SCRIPT_DIR}" >&2; exit 1; }
@@ -122,7 +132,7 @@ mkdir -p "$OUTPUT_DIR"
 if ! gh pr diff "$PR_NUMBER" "${REPO_FLAG[@]}" > "$DIFF_FILE"; then
   echo "❌ Error: Could not fetch PR diff."
   echo "💡 Tip: Ensure you are logged into the correct GitHub Enterprise host."
-  echo "   Run: gh auth login --hostname github.disney.com"
+  echo "   Run: gh auth login --hostname $GH_HOST"
   exit 1
 fi
 
@@ -274,10 +284,10 @@ case "$MODE" in
       echo "❌ kiro-cli not found."
       exit 1
     fi
-    echo "🤖 Generating review with kiro-cli (dcl-dev agent)..."
+    echo "🤖 Generating review with kiro-cli (${KIRO_AGENT} agent)..."
     echo ""
     kiro-cli chat \
-      --agent dcl-dev \
+      --agent "$KIRO_AGENT" \
       --no-interactive \
       -a \
       "$(cat "$PROMPT_FILE")" 2>/dev/null | strip_ansi > "$REVIEW_FILE"

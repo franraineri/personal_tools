@@ -22,8 +22,13 @@
 
 set -euo pipefail
 
-OUTPUT_DIR="$HOME/output/review-pr"
-GH_HOST="github.disney.com"
+# ─── Config — precedence: env var > built-in default. ───
+# A Koda executor (or `koda project`) can export these so the code_review_agent
+# runs against any GitHub host / output location without editing the script:
+#   REVIEW_GH_HOST    → GH_HOST     (default: github.disney.com)
+#   REVIEW_OUTPUT_DIR → OUTPUT_DIR  (default: ~/output/review-pr)
+OUTPUT_DIR="${REVIEW_OUTPUT_DIR:-$HOME/output/review-pr}"
+GH_HOST="${REVIEW_GH_HOST:-github.disney.com}"
 
 # ─── Dependency check ───
 for cmd in gh jq; do

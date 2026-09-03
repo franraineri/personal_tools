@@ -55,6 +55,10 @@
 #   --branch <NAME>         Hotfix branch name          (default: hotfix/<release>-updates;
 #                                                        push-existing default: current branch)
 #   --jira-context <TEXT>   Text pasted verbatim into the PR body
+#   --base-branch <NAME>    Branch to sync before the release branch (env: HOTFIX_BASE_BRANCH; default: develop)
+#   --upstream-remote <R>   Remote holding the canonical release branch (env: HOTFIX_UPSTREAM_REMOTE; default: upstream)
+#   --origin-remote <R>     Remote to push the hotfix branch to (env: HOTFIX_ORIGIN_REMOTE; default: origin)
+#   --git-host <HOST>       Git host for PR/browser URLs (env: HOTFIX_GIT_HOST; default: github.disney.com)
 #   --push-existing         Operate on the CURRENT branch: skip sync/branch-create/
 #                           cherry-pick and only run the test gate, push, and open the
 #                           PR. Use when the branch is already prepared (e.g. conflicts
@@ -96,12 +100,20 @@ UTILS_SH="${SCRIPT_DIR}/utils.sh"
 source "$UTILS_SH"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Config (edit here if hosts/branches change)
+# Config — precedence: CLI flag > environment variable > built-in default.
+# These are the values that change per repo/team; a Koda executor (or
+# `koda project`) can export the env vars so agents don't hardcode them.
+#   HOTFIX_GIT_HOST         → GIT_HOST            (default: github.disney.com)
+#   HOTFIX_BASE_BRANCH      → DEFAULT_BASE_BRANCH (default: develop)
+#   HOTFIX_UPSTREAM_REMOTE  → UPSTREAM_REMOTE     (default: upstream)
+#   HOTFIX_ORIGIN_REMOTE    → ORIGIN_REMOTE       (default: origin)
+# Corresponding flags (parsed below) override the env vars:
+#   --git-host / --base-branch / --upstream-remote / --origin-remote
 # ─────────────────────────────────────────────────────────────────────────────
-GIT_HOST="github.disney.com"
-DEFAULT_BASE_BRANCH="develop"    # branch to sync before creating the release branch
-UPSTREAM_REMOTE="upstream"       # remote that holds the canonical release branch
-ORIGIN_REMOTE="origin"           # remote to push the hotfix branch to (your fork)
+GIT_HOST="${HOTFIX_GIT_HOST:-github.disney.com}"          # git host for browser/PR URLs
+DEFAULT_BASE_BRANCH="${HOTFIX_BASE_BRANCH:-develop}"      # branch to sync before creating the release branch
+UPSTREAM_REMOTE="${HOTFIX_UPSTREAM_REMOTE:-upstream}"    # remote that holds the canonical release branch
+ORIGIN_REMOTE="${HOTFIX_ORIGIN_REMOTE:-origin}"          # remote to push the hotfix branch to (your fork)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Argument parsing
@@ -124,7 +136,7 @@ SKIP_PREFLIGHT=false
 
 usage() {
     # Print the leading comment block (usage/options) with the leading "# " stripped.
-    sed -n '2,68p' "$SCRIPT_PATH" | sed 's/^#\{1,\} \{0,1\}//; s/^#$//'
+    sed -n '2,72p' "$SCRIPT_PATH" | sed 's/^#\{1,\} \{0,1\}//; s/^#$//'
     exit "${1:-0}"
 }
 
@@ -140,6 +152,10 @@ parse_args() {
             --repo-dir)        REPO_DIR="$2"; shift 2 ;;
             --branch)          HOTFIX_BRANCH="$2"; shift 2 ;;
             --jira-context)    JIRA_CONTEXT="$2"; shift 2 ;;
+            --git-host)        GIT_HOST="$2"; shift 2 ;;
+            --base-branch)     DEFAULT_BASE_BRANCH="$2"; shift 2 ;;
+            --upstream-remote) UPSTREAM_REMOTE="$2"; shift 2 ;;
+            --origin-remote)   ORIGIN_REMOTE="$2"; shift 2 ;;
             --push-existing)   PUSH_EXISTING=true; shift ;;
             --skip-preflight)  SKIP_PREFLIGHT=true; shift ;;
             --skip-tests)      SKIP_TESTS=true; shift ;;
