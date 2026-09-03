@@ -1,10 +1,12 @@
 #!/bin/bash
+# If invoked under zsh, re-exec with bash so bash-only constructs behave correctly.
+if [ -n "${ZSH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 # fresh-install.sh
 # Clears npm cache, removes node_modules & package-lock.json, reinstalls, and pushes the new lock file.
 # Features: VPN check, interactive repo selector menu, quiet output with spinner.
 
 # ─── Shared helpers (logging, VPN check, error handling). See utils.sh. ───────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 source "${SCRIPT_DIR}/utils.sh" || { echo "Missing utils.sh in ${SCRIPT_DIR}" >&2; exit 1; }
 
 # ─── Configuration ───────────────────────────────────────────────────────────

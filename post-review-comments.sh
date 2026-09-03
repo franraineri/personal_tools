@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# If invoked under zsh, re-exec with bash so bash-only constructs behave correctly.
+if [ -n "${ZSH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
+
 # Script to parse review-pr.sh output and post comments on the PR
 # Usage: ./post-review-comments.sh <PR_NUMBER> --inline|--file [OPTIONS]
 #

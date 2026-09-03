@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# If invoked under zsh (e.g. `zsh review-pr.sh …`), re-exec with bash so bash-only
+# constructs (BASH_SOURCE, read -rp, arrays) behave correctly.
+if [ -n "${ZSH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
+
 # Script to review PRs automatically using kiro-cli or claude CLI
 # Usage: ./review-pr.sh <PR_URL> [OPTIONS]
 #
@@ -20,7 +24,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 # ─── Config — precedence: env var > built-in default. ───
 # Mirrors the HOTFIX_* / REVIEW_* convention so a Koda executor can point the
@@ -144,13 +148,12 @@ fi
 
 echo "   Diff: $(wc -l < "$DIFF_FILE" | tr -d ' ') lines"
 
-# Fetch all PR metadata in a single gh call
-PR_META=$(gh pr view "$PR_NUMBER" "${REPO_FLAG[@]}" \
-  --json title,author,body,files 2>/dev/null || echo '{}')
-PR_TITLE=$(echo "$PR_META" | jq -r '.title // "Unknown"')
-PR_AUTHOR=$(echo "$PR_META" | jq -r '.author.login // "Unknown"')
-PR_BODY=$(echo "$PR_META" | jq -r '.body // ""')
-FILES=$(echo "$PR_META" | jq -r '.files[].path // empty')
+# Fetch PR metadata using gh's embedded jq (tolerant of CR/control chars in the
+# body that the system jq rejects when a captured JSON string is re-piped).
+PR_TITLE=$(gh pr view "$PR_NUMBER" "${REPO_FLAG[@]}" --json title --jq '.title // "Unknown"' 2>/dev/null || echo "Unknown")
+PR_AUTHOR=$(gh pr view "$PR_NUMBER" "${REPO_FLAG[@]}" --json author --jq '.author.login // "Unknown"' 2>/dev/null || echo "Unknown")
+PR_BODY=$(gh pr view "$PR_NUMBER" "${REPO_FLAG[@]}" --json body --jq '.body // ""' 2>/dev/null || echo "")
+FILES=$(gh pr view "$PR_NUMBER" "${REPO_FLAG[@]}" --json files --jq '.files[].path // empty' 2>/dev/null || echo "")
 
 echo "   PR: $PR_TITLE"
 echo "   Author: $PR_AUTHOR"
