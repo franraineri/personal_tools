@@ -244,7 +244,7 @@ cat >> "$PROMPT_FILE" <<'PROMPT_INSTRUCTIONS'
 
 ## Output format
 
-Be concise, summarysed. NO code blocks. Only brief text proposals.
+Be concise, summarised. NO code blocks. Only brief text proposals.
 
 ### 2. Critical Issues (must fix)
 a simple list. Each item: **file:name** **file:line** — what's wrong, and then very brief text proposal to fix.
@@ -255,14 +255,15 @@ Each item: **file:name** **file:line** — Focus: performance, deprecated APIs, 
 
 ---
 RULES:
-- Just append the output on the file, in format described
-- Be specific with line numbers on each review. Add the last line number for a code-clock you are reviewing/commenting/suggesting
+- PRINT the review as your final message to stdout ONLY. Do NOT write, create, edit, or append to ANY file. Do NOT use file-writing tools. The calling script captures your stdout — you must not touch the filesystem.
+- Output ONLY the review in the format above. Do NOT narrate your process, do NOT print tool calls, read confirmations, "Let me…", or any preamble. The very first line of your output must be "### 2. Critical Issues (must fix)".
+- Be specific with line numbers on each review. Add the last line number for a code-block you are reviewing/commenting/suggesting
 - Do NOT repeat issues already listed in "Existing Unresolved Comments"
 - Do NOT include code snippets or code blocks — quick and concise text proposals only
 - Do Not include special characters or characters drawing at all.
 - Keep each issue to 1-2 sentences max
 - write the comment fixes as a suggestion, like 'we could ...' 'it should be ... ?'
-- avoid annalysing minnor issues, skip them. 
+- avoid annalysing minnor issues, skip them.
 ---
 
 PROMPT_INSTRUCTIONS
@@ -280,6 +281,13 @@ strip_ansi() {
   sed $'s/\x1b\[[0-9;]*[A-Za-z]//g' | sed 's/━//g' | sed '/^[[:space:]]*$/d' | cat -s
 }
 
+# extract_review — keep only the review, discarding any agent process narration
+# (tool calls, "Let me…", read confirmations). The prompt guarantees the review
+# starts at the first "### " header; capture from there to the end.
+extract_review() {
+  awk '/^### / { capture=1 } capture { print }'
+}
+
 # ─── Execute review ───
 case "$MODE" in
   kiro)
@@ -292,8 +300,8 @@ case "$MODE" in
     kiro-cli chat \
       --agent "$KIRO_AGENT" \
       --no-interactive \
-      -a \
-      "$(cat "$PROMPT_FILE")" 2>/dev/null | strip_ansi > "$REVIEW_FILE"
+      --trust-tools=fs_read,grep \
+      "$(cat "$PROMPT_FILE")" 2>/dev/null | strip_ansi | extract_review > "$REVIEW_FILE"
     ;;
 
   claude)
@@ -303,7 +311,7 @@ case "$MODE" in
     fi
     echo "🤖 Generating review with Claude CLI..."
     echo ""
-    claude --print "$(cat "$PROMPT_FILE")" 2>/dev/null | strip_ansi > "$REVIEW_FILE"
+    claude --print "$(cat "$PROMPT_FILE")" 2>/dev/null | strip_ansi | extract_review > "$REVIEW_FILE"
     ;;
 
   manual)
