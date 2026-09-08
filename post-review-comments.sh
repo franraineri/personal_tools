@@ -3,6 +3,17 @@
 # If invoked under zsh, re-exec with bash so bash-only constructs behave correctly.
 if [ -n "${ZSH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 
+# Shared helpers (colored logging, gh_json / pr_field, GH_HOST default). utils.sh
+# is bash-safe to source: its zsh-only helpers are guarded and never run here.
+# Required — this script uses gh_json / pr_field from it.
+_UTILS_PATH="$(dirname "$0")/utils.sh"
+if [ ! -f "$_UTILS_PATH" ]; then
+  echo "Error: required helper not found: $_UTILS_PATH" >&2
+  exit 1
+fi
+# shellcheck source=utils.sh
+source "$_UTILS_PATH"
+
 # Script to parse review-pr.sh output and post comments on the PR
 # Usage: ./post-review-comments.sh <PR_NUMBER> --inline|--file [OPTIONS]
 #
@@ -111,7 +122,7 @@ echo ""
 
 # ─── Get the latest commit SHA ───
 REPO_FLAG=(--repo "$REPO")
-COMMIT_SHA=$(gh pr view "$PR_NUMBER" "${REPO_FLAG[@]}" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+COMMIT_SHA=$(pr_field "$REPO" "$PR_NUMBER" headRefOid 2>/dev/null || true)
 
 if [ -z "$COMMIT_SHA" ]; then
   echo "Error: Could not fetch latest commit SHA for PR #$PR_NUMBER"
@@ -423,8 +434,7 @@ if [ "$POST_MODE" = "file" ]; then
     c_body=$(echo "$decoded" | jq -r '.body')
 
     POST_RESULT=0
-    RESPONSE=$(gh api \
-      --hostname "$GH_HOST" \
+    RESPONSE=$(gh_json \
       --method POST \
       "$COMMENT_ENDPOINT" \
       -f body="$c_body" \
@@ -474,8 +484,7 @@ $(echo -e "$ORPHAN_COMMENTS")"
     } + (if ($comments | length) > 0 then {comments: $comments} else {} end)')
 
   POST_RESULT=0
-  RESPONSE=$(echo "$REQUEST_BODY" | gh api \
-    --hostname "$GH_HOST" \
+  RESPONSE=$(echo "$REQUEST_BODY" | gh_json \
     --method POST \
     "$API_ENDPOINT" \
     --input - 2>&1) || POST_RESULT=$?
