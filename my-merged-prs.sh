@@ -5,8 +5,26 @@
 
 set -euo pipefail
 
+# Shared helpers (logging) — optional. Guard the source so the script still runs
+# standalone if utils.sh is not alongside it.
+_MMP_DIR="${${(%):-%x}:A:h}"
+if [[ -f "${_MMP_DIR}/utils.sh" ]]; then
+    source "${_MMP_DIR}/utils.sh"
+fi
+
+# _date_weeks_ago N — print the date N weeks ago as YYYY-MM-DD, portably.
+# macOS/BSD `date` uses `-v-Nw`; GNU `date` uses `-d "N weeks ago"`.
+_date_weeks_ago() {
+    local weeks="$1"
+    if date -v-1d +%Y-%m-%d >/dev/null 2>&1; then
+        date -v-"${weeks}"w +%Y-%m-%d          # BSD/macOS
+    else
+        date -d "${weeks} weeks ago" +%Y-%m-%d # GNU/Linux
+    fi
+}
+
 # Defaults
-FROM_DATE=$(date -v-3w +%Y-%m-%d)
+FROM_DATE=$(_date_weeks_ago 3)
 TO_DATE=$(date +%Y-%m-%d)
 REPO=""
 OUT_FILE=""

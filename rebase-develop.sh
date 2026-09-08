@@ -40,7 +40,7 @@ utils_enable_error_trap
 # ─────────────────────────────────────────────────────────────────────────────
 BASE_BRANCH="${REBASE_BASE_BRANCH:-develop}"
 UPSTREAM_REMOTE="${REBASE_UPSTREAM_REMOTE:-upstream}"
-REPOS_BASE="${REBASE_REPOS_BASE:-/Users/franco.raineri/devTools/DCL/Silent}"
+REPOS_BASE="${REBASE_REPOS_BASE:-$HOME/devTools/DCL/Silent}"
 LIB_REPO="${REBASE_LIB_REPO:-${REPOS_BASE}/dcl-ui-global-components-library-v2}"
 SPA_REPO="${REBASE_SPA_REPO:-${REPOS_BASE}/dcl-cruise-101-spa}"
 
@@ -135,14 +135,17 @@ rebase_repo() {
 
     if [[ "$BRANCH" == "$BASE_BRANCH" ]]; then
         echo "${DIM}Already on ${BASE_BRANCH}, just pulling upstream...${RESET}"
+        local STASHED=false
         if [[ -n $(git status --porcelain) ]]; then
             git stash -m "rebase-develop: auto-stash on ${BASE_BRANCH}"
+            STASHED=true
         fi
-        git stash -m "rebase-develop: auto-stash on ${BRANCH}"
         git pull "$UPSTREAM_REMOTE" "$BASE_BRANCH"
         echo "${GREEN}${BOLD}✓ ${BASE_BRANCH} is up to date.${RESET}"
-        echo "${DIM}Restoring stashed changes...${RESET}"
-        safe_stash_pop || return 1
+        if [[ "$STASHED" == true ]]; then
+            echo "${DIM}Restoring stashed changes...${RESET}"
+            safe_stash_pop || return 1
+        fi
         go_bump_lib_version
         return 0
     fi

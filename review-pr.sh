@@ -150,10 +150,10 @@ echo "   Diff: $(wc -l < "$DIFF_FILE" | tr -d ' ') lines"
 
 # Fetch PR metadata using gh's embedded jq (tolerant of CR/control chars in the
 # body that the system jq rejects when a captured JSON string is re-piped).
-PR_TITLE=$(gh pr view "$PR_NUMBER" "${REPO_FLAG[@]}" --json title --jq '.title // "Unknown"' 2>/dev/null || echo "Unknown")
-PR_AUTHOR=$(gh pr view "$PR_NUMBER" "${REPO_FLAG[@]}" --json author --jq '.author.login // "Unknown"' 2>/dev/null || echo "Unknown")
-PR_BODY=$(gh pr view "$PR_NUMBER" "${REPO_FLAG[@]}" --json body --jq '.body // ""' 2>/dev/null || echo "")
-FILES=$(gh pr view "$PR_NUMBER" "${REPO_FLAG[@]}" --json files --jq '.files[].path // empty' 2>/dev/null || echo "")
+PR_TITLE=$(pr_field "$REPO" "$PR_NUMBER" title '.title // "Unknown"' 2>/dev/null || echo "Unknown")
+PR_AUTHOR=$(pr_field "$REPO" "$PR_NUMBER" author '.author.login // "Unknown"' 2>/dev/null || echo "Unknown")
+PR_BODY=$(pr_field "$REPO" "$PR_NUMBER" body '.body // ""' 2>/dev/null || echo "")
+FILES=$(pr_field "$REPO" "$PR_NUMBER" files '.files[].path // empty' 2>/dev/null || echo "")
 
 echo "   PR: $PR_TITLE"
 echo "   Author: $PR_AUTHOR"

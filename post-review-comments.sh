@@ -121,9 +121,19 @@ if [ -z "$COMMIT_SHA" ]; then
 fi
 echo "Commit: ${COMMIT_SHA:0:8}"
 
+# ─── Temp-file cleanup (single trap for all exit paths) ───
+DIFF_FILE=""
+ISSUES_FILE=""
+RESOLVED_FILE=""
+cleanup() {
+  [ -n "$DIFF_FILE" ] && [ -f "$DIFF_FILE" ] && rm -f "$DIFF_FILE"
+  [ -n "$ISSUES_FILE" ] && [ -f "$ISSUES_FILE" ] && rm -f "$ISSUES_FILE"
+  [ -n "$RESOLVED_FILE" ] && [ -f "$RESOLVED_FILE" ] && rm -f "$RESOLVED_FILE"
+}
+trap cleanup EXIT INT TERM
+
 # ─── Fetch diff (needed for path resolution and --inline mode) ───
 DIFF_FILE=$(mktemp)
-trap "rm -f '$DIFF_FILE'" EXIT
 if ! gh pr diff "$PR_NUMBER" "${REPO_FLAG[@]}" > "$DIFF_FILE" 2>/dev/null; then
   echo "Error: Could not fetch PR diff"
   exit 1
@@ -268,13 +278,11 @@ resolve_full_path() {
 # ─── Parse issues ───
 echo "Parsing review..."
 ISSUES_FILE=$(mktemp)
-trap "rm -f '$DIFF_FILE' '$ISSUES_FILE'" EXIT
 
 parse_issues_to_file "$REVIEW_FILE" "$LEVEL" "$ISSUES_FILE"
 
 if [ ! -s "$ISSUES_FILE" ]; then
   echo "No issues found at level '$LEVEL'."
-  rm -f "$ISSUES_FILE"
   exit 0
 fi
 
@@ -381,7 +389,6 @@ echo ""
 if [ "$DRY_RUN" = true ]; then
   echo "Dry run complete. No comments posted."
   echo "PR: $PR_URL"
-  rm -f "$ISSUES_FILE"
   exit 0
 fi
 
@@ -446,11 +453,11 @@ elif [ "$POST_MODE" = "inline" ]; then
 
   # Build review body — include orphan comments that couldn't be posted inline
   REVIEW_BODY="LGTM."
-#   if [ -n "$ORPHAN_COMMENTS" ]; then
-#     REVIEW_BODY="Code review comments.
+  if [ -n "$ORPHAN_COMMENTS" ]; then
+    REVIEW_BODY="Code review comments.
 
-# **Issues outside the diff (could not be posted inline):**
-# $(echo -e "$ORPHAN_COMMENTS")"
+**Issues outside the diff (could not be posted inline):**
+$(echo -e "$ORPHAN_COMMENTS")"
   fi
 
   API_ENDPOINT="repos/${REPO}/pulls/${PR_NUMBER}/reviews"
@@ -491,9 +498,6 @@ elif [ "$POST_MODE" = "inline" ]; then
     echo "Response received but could not confirm review ID."
     echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
   fi
-
+fi
 
 echo "PR: $PR_URL"
-
-# Cleanup
-rm -f "$ISSUES_FILE"

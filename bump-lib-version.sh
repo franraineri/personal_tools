@@ -45,7 +45,7 @@ fi
 #   BUMP_REPOS_BASE      → REPOS_BASE       (parent dir; used to derive the 3 defaults)
 # ─────────────────────────────────────────────────────────────────────────────
 PKG_NAME="${BUMP_PKG_NAME:-@dcl/dcl-ui-global-components-library-v2}"
-REPOS_BASE="${BUMP_REPOS_BASE:-/Users/franco.raineri/devTools/DCL/Silent}"
+REPOS_BASE="${BUMP_REPOS_BASE:-$HOME/devTools/DCL/Silent}"
 SPA_PKG="${BUMP_SPA_PKG:-${REPOS_BASE}/dcl-cruise-101-spa/package.json}"
 LIB_ROOT_PKG="${BUMP_LIB_ROOT_PKG:-${REPOS_BASE}/dcl-ui-global-components-library-v2/package.json}"
 LIB_PROJECT_PKG="${BUMP_LIB_PROJECT_PKG:-${REPOS_BASE}/dcl-ui-global-components-library-v2/projects/dcl-ui-global-components-library-v2/package.json}"
@@ -56,10 +56,26 @@ for f in "$LIB_PROJECT_PKG" "$LIB_ROOT_PKG" "$SPA_PKG"; do
 done
 
 # --- Step 1: Bump the library project version
-log_info "Bumping library project version by ${INCREMENT}..."
+# Capture the current version first so we can (a) compute the expected result
+# and (b) verify the in-place edit actually changed the file (perl -pe exits 0
+# even when nothing matched, so a silent no-op would otherwise go unnoticed).
+OLD_VERSION=$(grep -m1 '"version"' "$LIB_PROJECT_PKG" | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+[[ -n "$OLD_VERSION" ]] || die "Could not read current version from ${LIB_PROJECT_PKG}"
+
+# Compute the expected new version (major.minor unchanged, patch += INCREMENT).
+OLD_MAJOR_MINOR="${OLD_VERSION%.*}"
+OLD_PATCH="${OLD_VERSION##*.}"
+[[ "$OLD_PATCH" =~ ^[0-9]+$ ]] || die "Unexpected version format in ${LIB_PROJECT_PKG}: '${OLD_VERSION}'"
+EXPECTED_VERSION="${OLD_MAJOR_MINOR}.$((OLD_PATCH + INCREMENT))"
+
+log_info "Bumping library project version by ${INCREMENT} (${OLD_VERSION} → ${EXPECTED_VERSION})..."
 run_checked "Bump version in library project package.json" \
     perl -i -pe "s/(\"version\":\\s*\")(\\d+\\.\\d+\\.)(\\d+)(\")/ \"\$1\$2\" . (\$3+$INCREMENT) . \"\$4\" /e" "$LIB_PROJECT_PKG" \
     || die "Could not bump the library project version."
+
+# Verify the bump actually took effect (guard against a silent perl no-op).
+grep -q "\"version\"[[:space:]]*:[[:space:]]*\"${EXPECTED_VERSION}\"" "$LIB_PROJECT_PKG" \
+    || die "Version bump did not apply: expected \"${EXPECTED_VERSION}\" not found in ${LIB_PROJECT_PKG}."
 
 # --- Step 2: Read the canonical version from library project
 CANONICAL_VERSION=$(grep -m1 '"version"' "$LIB_PROJECT_PKG" | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
@@ -77,14 +93,27 @@ run_checked "Sync library root package.json" \
     perl -i -pe "s/(\"version\":\\s*\")\\d+\\.\\d+\\.\\d+(\")/\${1}${CANONICAL_VERSION}\${2}/" "$LIB_ROOT_PKG" \
     || die "Could not sync the library root version."
 
-# --- Step 4: Set SPA dependency to ^<canonical version>
+# Verify the sync actually took effect (perl -pe exits 0 even on no match).
+grep -q "\"version\"[[:space:]]*:[[:space:]]*\"${CANONICAL_VERSION}\"" "$LIB_ROOT_PKG" \
+    || die "Library root sync did not apply: \"${CANONICAL_VERSION}\" not found in ${LIB_ROOT_PKG}."
+
+# --- Step 4: Set SPA dependency to the canonical version
 # Escape regex metacharacters in the package name so it can be embedded in the
 # perl pattern (handles the leading @ and the / in the scope).
 PKG_NAME_RE=$(printf '%s' "$PKG_NAME" | sed 's/[.[\*^$()+?{|\/@]/\\&/g')
 log_info "Syncing dependency in ${SPA_PKG}"
+# The dependency may be pinned as an exact ("0.9.48"), caret ("^0.9.48"), or
+# tilde ("~0.9.48") range. Capture the optional leading ^ or ~ and preserve it,
+# so we don't accidentally change the range operator (or silently no-op when the
+# real package.json uses an exact pin — which it does).
 run_checked "Sync SPA dependency version" \
-    perl -i -pe "s/(\"${PKG_NAME_RE}\":\\s*\"\\^)\\d+\\.\\d+\\.\\d+(\")/\${1}${CANONICAL_VERSION}\${2}/" "$SPA_PKG" \
+    perl -i -pe "s/(\"${PKG_NAME_RE}\":\\s*\")([\\^~]?)\\d+\\.\\d+\\.\\d+(\")/\${1}\${2}${CANONICAL_VERSION}\${3}/" "$SPA_PKG" \
     || die "Could not sync the SPA dependency version."
+
+# Verify the SPA dependency now points at the canonical version (with any
+# preserved ^/~ prefix). Fail loudly rather than silently leaving it stale.
+grep -Eq "\"${PKG_NAME}\"[[:space:]]*:[[:space:]]*\"[\^~]?${CANONICAL_VERSION}\"" "$SPA_PKG" \
+    || die "SPA dependency sync did not apply: \"${CANONICAL_VERSION}\" not found for ${PKG_NAME} in ${SPA_PKG}."
 
 # --- Show results
 echo ""

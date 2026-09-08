@@ -74,7 +74,8 @@
 # Dependencies: git, gh, jq, dig
 #
 
-set -e
+# Strict error handling is enabled below via utils_enable_error_trap (after
+# utils.sh is sourced), matching rebase-develop.sh / bump-lib-version.sh.
 
 # This script relies on zsh-specific features (array flags ${(@f)}, ${(@s:,:)},
 # 1-based arrays). Refuse to run under bash/sh with a clear message rather than
@@ -98,6 +99,7 @@ TEST_SUMMARY="${SCRIPT_DIR}/test-summary.sh"
 UTILS_SH="${SCRIPT_DIR}/utils.sh"
 [[ -f "$UTILS_SH" ]] || { echo "Missing ${UTILS_SH}" >&2; exit 1; }
 source "$UTILS_SH"
+utils_enable_error_trap
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config — precedence: CLI flag > environment variable > built-in default.

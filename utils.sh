@@ -13,6 +13,8 @@
 #                       run_checked "<label>" <cmd...>  (run a command, log a clear
 #                       error if it fails)
 #   • Connectivity:     check_vpn <host>
+#   • GitHub CLI:       gh_json <gh-api-args...>   (wraps gh api --hostname "$GH_HOST")
+#                       pr_field <repo> <pr> <field> [jq]  (single PR field via gh pr view)
 #
 # Provides (zsh only — guarded; used by hotfix-cherry-pick.sh):
 #   • enable_rerere <repo_dir>
@@ -56,6 +58,27 @@ log_ok()    { echo "${GREEN}${BOLD}✓ $*${RESET}"; }
 log_warn()  { echo "${YELLOW}${BOLD}! $*${RESET}"; }
 log_error() { echo "${RED}${BOLD}✗ $*${RESET}" >&2; }
 die()       { log_error "$*"; exit 1; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub CLI helpers
+#   GH_HOST — the GitHub host used by `gh`. Sourcing scripts may export their own
+#   (e.g. REVIEW_GH_HOST / HOTFIX_GIT_HOST) before sourcing; we only default it.
+#   gh_json <gh-api-args...>  — thin wrapper around `gh api --hostname "$GH_HOST"`.
+#   pr_field <repo> <pr> <json-field> [jq-filter] — fetch a single PR field via
+#       `gh pr view --json ... --jq ...`. Defaults the jq filter to `.<field>`.
+# ─────────────────────────────────────────────────────────────────────────────
+: ${GH_HOST:=github.disney.com}
+
+gh_json() {
+    gh api --hostname "$GH_HOST" "$@"
+}
+
+pr_field() {
+    local repo="$1" pr="$2" field="$3" filter="${4:-.${3}}"
+    [[ -n "$repo" && -n "$pr" && -n "$field" ]] \
+        || { log_error "pr_field: usage: pr_field <repo> <pr> <json-field> [jq-filter]"; return 2; }
+    gh pr view "$pr" --repo "$repo" --json "$field" --jq "$filter"
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Error handling
