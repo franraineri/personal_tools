@@ -550,6 +550,89 @@ cherry_pick_commits() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step: guard against a leaked project version bump
+#
+# Cherry-picking a develop PR onto a release branch can drag in the next-release
+# `version` bump in package.json / package-lock.json (e.g. develop is on 2.5.0
+# while the hotfix targets release-2.4.0). This is version drift: the hotfix PR
+# ends up changing the project version, which is never intended for a hotfix.
+#
+# Strategy (Option A): after the cherry-pick, compare the working-tree project
+# version against the release branch's version. If they differ, restore ONLY the
+# project `version` field in package.json + package-lock.json to the release's
+# value, commit the correction, and warn loudly. Dependency bumps (e.g. a library
+# version) are intentionally left untouched — only the project's own version is
+# reverted. Never fails the run; if the release version can't be determined it
+# only warns.
+# ─────────────────────────────────────────────────────────────────────────────
+guard_project_version() {
+    local pkg="${REPO_DIR}/package.json"
+    [[ -f "$pkg" ]] || return 0   # not a Node project → nothing to guard
+
+    command -v node >/dev/null 2>&1 || { log_warn "node not found; skipping version-drift guard."; return 0; }
+
+    local release_ref="${UPSTREAM_REMOTE}/${RELEASE_BRANCH}"
+
+    # Version currently in the working tree (post cherry-pick).
+    local current_ver
+    current_ver=$(node -e 'try{process.stdout.write(require(process.argv[1]).version||"")}catch(e){}' "$pkg" 2>/dev/null)
+
+    # Version on the release branch base (source of truth for a hotfix).
+    local release_pkg_json release_ver
+    release_pkg_json=$(run_git show "${release_ref}:package.json" 2>/dev/null)
+    if [[ -z "$release_pkg_json" ]]; then
+        log_warn "Version-drift guard: could not read package.json from ${release_ref}; skipping (verify version manually)."
+        return 0
+    fi
+    release_ver=$(printf '%s' "$release_pkg_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).version||"")}catch(e){}})' 2>/dev/null)
+
+    if [[ -z "$current_ver" || -z "$release_ver" ]]; then
+        log_warn "Version-drift guard: version unresolved (current='${current_ver}', release='${release_ver}'); skipping."
+        return 0
+    fi
+
+    if [[ "$current_ver" == "$release_ver" ]]; then
+        log_ok "Version-drift guard: project version matches ${RELEASE_BRANCH} (${release_ver})."
+        return 0
+    fi
+
+    log_warn "Version-drift guard: project version changed ${release_ver} → ${current_ver} (leaked from source branch)."
+    log_info "Restoring project version to ${release_ver} in package.json / package-lock.json (dependency bumps untouched)."
+
+    # Restore ONLY the project's own version key. node edits keep JSON valid and
+    # avoid touching third-party deps that may coincidentally be on the same value.
+    VER="$release_ver" node -e '
+        const fs = require("fs");
+        const want = process.env.VER;
+        const files = ["package.json", "package-lock.json"];
+        for (const f of files) {
+            if (!fs.existsSync(f)) continue;
+            const j = JSON.parse(fs.readFileSync(f, "utf8"));
+            let touched = false;
+            if (j.version !== undefined && j.version !== want) { j.version = want; touched = true; }
+            // package-lock v2/v3: the root package under packages[""] mirrors the version.
+            if (j.packages && j.packages[""] && j.packages[""].version !== undefined
+                && j.packages[""].version !== want) {
+                j.packages[""].version = want; touched = true;
+            }
+            if (touched) fs.writeFileSync(f, JSON.stringify(j, null, 4) + "\n");
+        }
+    ' 2>/dev/null || { log_warn "Version-drift guard: node edit failed; leaving files as-is (verify version manually)."; return 0; }
+
+    # Stage only the manifest files and commit the correction (no-verify: hooks
+    # run on the final push, and this is a mechanical housekeeping commit).
+    run_git add package.json package-lock.json 2>/dev/null || true
+    if [[ -n "$(run_git diff --cached --name-only)" ]]; then
+        GIT_EDITOR=true run_git commit --no-verify \
+            -m "chore: keep project version at ${release_ver} on ${RELEASE_BRANCH} (drop leaked bump)" >/dev/null 2>&1 \
+            && log_ok "Version-drift guard: restored to ${release_ver} and committed." \
+            || log_warn "Version-drift guard: could not commit the version restore; verify manually."
+    else
+        log_warn "Version-drift guard: nothing staged after edit; verify the version manually."
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step: test gate
 # ─────────────────────────────────────────────────────────────────────────────
 run_test_gate() {
@@ -760,6 +843,7 @@ push_existing_flow() {
     populate_source_metadata
     log_info "PR body will list ${#CHERRY_SHAS[@]} commit(s)."
 
+    guard_project_version
     run_test_gate
     push_hotfix_branch
 
@@ -899,6 +983,7 @@ main() {
     fi
 
     cherry_pick_commits
+    guard_project_version
     run_test_gate
     push_hotfix_branch
 
